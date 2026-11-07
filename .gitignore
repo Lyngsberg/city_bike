@@ -1,0 +1,10 @@
+# folders
+.vscode
+2023-citibike-tripdata
+.conda
+citybike
+
+# file extensions
+*.pyc
+*.csv
+*.zip
