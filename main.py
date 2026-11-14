@@ -55,7 +55,7 @@ top = sorted(edges, key=lambda t: t[2], reverse=True)[:10000]
 
 segments = [(pos[start], pos[end]) for start, end, _ in top]
 max_n = top[0][2]
-widths = 2*[n / max_n for _, _, n in top]
+widths = [2*n / max_n for _, _, n in top]
 print("Der plotttesssss")
 fig, ax = plt.subplots(figsize=(8, 10))
 ax.add_collection(LineCollection(segments, linewidths=widths, alpha=0.3))

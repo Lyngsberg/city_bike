@@ -3,8 +3,11 @@
 2023-citibike-tripdata
 .conda
 citybike
+__pycache__/*
 
 # file extensions
 *.pyc
 *.csv
 *.zip
+*.DS_Store
+*.code-workspace
