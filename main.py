@@ -7,7 +7,8 @@ import os
 
 print("data indlæses!")
 load = "2023-citibike-tripdata"
-# Each monthly zip holds several CSVs; read only the columns needed for a first look.
+
+
 cols = ["rideable_type", "started_at", "ended_at", "member_casual",
         "start_station_id", "end_station_id",
         "start_lat", "start_lng", "end_lat", "end_lng"]
