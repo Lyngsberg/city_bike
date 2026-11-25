@@ -1,12 +1,7 @@
-"""Station graph and community detection.
+"""Build station graphs and compare communities.
 
-Implemented here (course topic: graph clustering):
-  * modularity(): Newman-Girvan modularity with a resolution parameter
-  * spectral_clustering(): normalised spectral clustering (Ng, Jordan & Weiss 2001)
-  * flow_retention(): share of trips that start and end in the same community
-Wrapped libraries:
-  * louvain(): igraph's multilevel modularity optimisation
-  * infomap(): the map equation on the *directed* graph (not taught in the course)
+Modularity and spectral clustering are implemented here.
+Louvain uses igraph. Directed Infomap is the method beyond the curriculum.
 """
 
 import random
@@ -23,17 +18,17 @@ from sklearn.cluster import KMeans
 
 from citibike.paths import PROCESSED
 
-MIN_TRIPS_PER_DAY = 1.0  # stations below this (whole year) are too sparse for stable communities
+MIN_TRIPS_PER_DAY = 1.0  # Exclude stations with very little recorded activity.
 
 
 @dataclass
 class StationGraph:
-    ids: np.ndarray  # station_id per node
-    W: sp.csr_matrix  # directed trip counts, W[i, j] = trips from i to j
+    ids: np.ndarray  # Station order matches the matrix rows and columns.
+    W: sp.csr_matrix  # W[i, j] counts trips from i to j.
 
     @property
     def A(self) -> sp.csr_matrix:
-        """Undirected weights A = W + W^T (trips in either direction)."""
+        """Combine trips in both directions as A = W + W.T."""
         return (self.W + self.W.T).tocsr()
 
     def subgraph(self, mask: np.ndarray) -> "StationGraph":
@@ -41,7 +36,7 @@ class StationGraph:
 
 
 def node_set(min_trips_per_day: float = MIN_TRIPS_PER_DAY) -> np.ndarray:
-    """Stations active enough in the full year; the same node set is used for every slice."""
+    """Select stations by average daily arrivals plus departures over their observed dates."""
     st = pd.read_parquet(PROCESSED / "stations.parquet")
     days = (pd.to_datetime(st.last_seen) - pd.to_datetime(st.first_seen)).dt.days + 1
     keep = (st.departures + st.arrivals) / days >= min_trips_per_day
@@ -49,7 +44,7 @@ def node_set(min_trips_per_day: float = MIN_TRIPS_PER_DAY) -> np.ndarray:
 
 
 def load_graph(slice_name: str = "all", ids: np.ndarray | None = None) -> StationGraph:
-    """Directed graph of one time slice over `ids`, restricted to the largest connected component."""
+    """Keep the largest weakly connected component of the requested slice and stations."""
     ids = node_set() if ids is None else ids
     edges = pd.read_parquet(PROCESSED / "edges.parquet", filters=[("slice", "==", slice_name)])
     index = pd.Series(np.arange(len(ids)), index=ids)
@@ -69,10 +64,11 @@ def _one_hot(labels: np.ndarray) -> sp.csr_matrix:
 
 
 def modularity(A: sp.spmatrix, labels: np.ndarray, resolution: float = 1.0) -> float:
-    """Q = sum_c [ L_c / 2m - gamma * (d_c / 2m)^2 ]
+    """Compare internal weight with the degree-based random expectation.
 
-    L_c: total weight of edges inside community c (both directions, i.e. sum of A_ij over i, j in c),
-    d_c: total degree (strength) of c, 2m: total weight sum(A).
+    Q = sum_c [L_c / 2m - gamma * (d_c / 2m)^2].
+    L_c counts internal weight in both directions, d_c is total community
+    strength, and 2m is the sum of A.
     """
     H = _one_hot(labels)
     two_m = A.sum()
@@ -82,7 +78,7 @@ def modularity(A: sp.spmatrix, labels: np.ndarray, resolution: float = 1.0) -> f
 
 
 def spectral_embedding(A: sp.spmatrix, k: int) -> tuple[np.ndarray, np.ndarray]:
-    """Top-k eigenpairs of the normalised adjacency D^-1/2 A D^-1/2 (= bottom of the normalised Laplacian)."""
+    """Return the leading k eigenpairs of the normalized adjacency D^-1/2 A D^-1/2."""
     d = np.asarray(A.sum(axis=1)).ravel()
     d_inv_sqrt = sp.diags(1 / np.sqrt(d))
     M = d_inv_sqrt @ A @ d_inv_sqrt
@@ -92,7 +88,7 @@ def spectral_embedding(A: sp.spmatrix, k: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def spectral_clustering(A: sp.spmatrix, k: int, seed: int = 0) -> np.ndarray:
-    """Ng-Jordan-Weiss: embed with the top-k eigenvectors, normalise rows to unit length, run k-means."""
+    """Normalize eigenvector rows, then group them with k-means (Ng-Jordan-Weiss)."""
     _, U = spectral_embedding(A, k)
     U = U / np.linalg.norm(U, axis=1, keepdims=True)
     return KMeans(k, n_init=20, random_state=seed).fit_predict(U)
@@ -106,7 +102,7 @@ def louvain(A: sp.spmatrix, resolution: float = 1.0, seed: int = 0) -> np.ndarra
 
 
 def infomap(W: sp.spmatrix, seed: int = 0, trials: int = 10, markov_time: float = 1.0) -> np.ndarray:
-    """Two-level Infomap on the directed, weighted trip graph."""
+    """Fit two-level Infomap to directed trip counts."""
     im = Infomap(two_level=True, directed=True, silent=True, seed=seed + 1, num_trials=trials, markov_time=markov_time)
     coo = sp.coo_matrix(W)
     im.add_links(zip(coo.row.tolist(), coo.col.tolist(), coo.data.tolist()))
@@ -116,13 +112,13 @@ def infomap(W: sp.spmatrix, seed: int = 0, trials: int = 10, markov_time: float 
 
 
 def flow_retention(W: sp.spmatrix, labels: np.ndarray) -> float:
-    """Fraction of trips whose start and end stations are in the same community."""
+    """Return the share of trips staying in one community."""
     H = _one_hot(labels)
     return float((H.T @ W @ H).diagonal().sum() / W.sum())
 
 
 def community_table(g: StationGraph, labels: np.ndarray) -> pd.DataFrame:
-    """Per community: size, trips starting there, and self-containment = share of those trips that stay inside."""
+    """Summarize community size, departures, and the share of departures staying inside."""
     H = _one_hot(labels)
     C = (H.T @ g.W @ H).toarray()
     out = pd.DataFrame(
@@ -137,8 +133,7 @@ def community_table(g: StationGraph, labels: np.ndarray) -> pd.DataFrame:
 
 
 def align_labels(reference: np.ndarray, labels: np.ndarray) -> np.ndarray:
-    """Rename communities in `labels` to the `reference` community they overlap most with
-    (one-to-one, largest overlaps first); unmatched communities get new ids above max(reference)."""
+    """Match labels by largest overlap first, giving unmatched groups new IDs."""
     overlap = pd.crosstab(labels, reference).stack().sort_values(ascending=False)
     mapping, used = {}, set()
     for (new, ref), n in overlap.items():

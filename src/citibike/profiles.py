@@ -1,9 +1,6 @@
-"""Net-flow profile clustering (course topic: general clustering).
+"""Cluster 48 hourly net-flow values per station, covering weekdays and weekends.
 
-Each station is described by 48 numbers: its average weekday and weekend
-net flow (arrivals - departures) per hour, divided by the station's total daily
-activity. The division removes station size, so the clustering compares the
-*shape and relative strength* of the daily imbalance, not how busy a station is.
+Divide by daily activity to compare stations of different sizes.
 """
 
 import numpy as np
@@ -15,7 +12,7 @@ from citibike.paths import PROCESSED
 
 
 def profile_matrix(ids: np.ndarray) -> pd.DataFrame:
-    """Rows: stations in `ids`; columns wd00..wd23, we00..we23 (net_norm)."""
+    """Return stations in the requested order with columns wd00..wd23 and we00..we23."""
     p = pd.read_parquet(PROCESSED / "profiles.parquet")
     p = p[p.station_id.isin(ids)]
     parts = [
@@ -38,7 +35,7 @@ def cluster(X: pd.DataFrame, k: int, method: str = "kmeans", seed: int = 0) -> n
 
 
 def order_by_morning_net(X: pd.DataFrame, labels: np.ndarray) -> np.ndarray:
-    """Relabel clusters 0..k-1 from strongest weekday-morning source to strongest sink (stable, readable labels)."""
+    """Order groups from largest morning bike loss to largest gain."""
     am = X[[f"wd{h:02d}" for h in range(6, 10)]].sum(axis=1).to_numpy()
     means = pd.Series(am).groupby(labels).mean().sort_values()
     return pd.Series(labels).map({c: i for i, c in enumerate(means.index)}).to_numpy()

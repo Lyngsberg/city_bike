@@ -1,34 +1,11 @@
-"""Clean typed trips and build the canonical station table.
+"""Clean trips and standardize station IDs.
 
-Every raw trip gets at most one `drop_reason` (first matching rule wins), so the
-cleaning report is a waterfall that sums to the raw row count. Findings from
-exploring 2026-08 that motivate the rules:
+Each rejected trip gets the first matching reason, so report counts add up.
+Use trip start times for the study window because monthly files overlap.
+Local timestamps can give negative durations at the daylight-saving change.
+Keep round trips for arrival/departure profiles and flag them for graph filtering.
 
-* Station ids are strings like '5980.10', but the source sometimes loses the
-  trailing zero ('5980.1') or appends '_' ('5303.06_'). Both refer to the same
-  station, so ids are normalised to two decimals (2474 raw -> 2390 stations).
-* Coordinates are the station's own coordinates, even for e-bikes, so the
-  station table can take the modal coordinate per station.
-* Jersey City/Hoboken stations (JC*, HB*) show up on cross-Hudson rides, and
-  operator stations (SYS*, 'Shop Morgan', and 'Morgan HCT Charging', which hides
-  behind the numeric id '1234.56') on maintenance moves. Both are dropped.
-* The source already removes trips under 60 s. Zip files are split by *end*
-  time, so trips are assigned to the study window by `started_at`.
-* Round trips (same start and end station) are kept but flagged: they cancel
-  out in net flow and are excluded as self-loops when building the graph.
-
-Findings from the full year (Sep 2025 - Aug 2026):
-
-* The April and May 2026 zips both contain the ~500 trips spanning midnight
-  Apr 30 -> May 1, so duplicates are also checked against the previous file.
-* Timestamps are local time without a zone: trips spanning the repeated hour on
-  2025-11-02 (DST fall-back) get negative durations and are dropped.
-* A few stations get a new id without moving (same name, lifetimes that don't
-  overlap). These are merged onto the newest id, which is the one the live GBFS
-  feed uses; the mapping is written to station_aliases.csv.
-
-    python -m citibike.clean                       # default window
-    python -m citibike.clean --start 2026-08-01 --end 2026-09-01
+    python -m citibike.clean --start 2025-09-01 --end 2026-09-01
 """
 
 import argparse
@@ -40,14 +17,14 @@ import duckdb
 from citibike.paths import PARQUET, PROCESSED
 
 MIN_DURATION_S = 60
-MAX_DURATION_S = 3 * 3600  # longer trips are mostly bikes not docked properly
-MAX_SPEED_KMH = 35  # e-bikes are capped at 20 mph (32 km/h)
-# Operator facilities that use normal-looking numeric ids (e.g. '1234.56' = 'Morgan HCT Charging')
+MAX_DURATION_S = 3 * 3600  # Exclude unusually long trips that may reflect docking problems.
+MAX_SPEED_KMH = 35  # Allow a margin above the 32 km/h e-bike limit.
+# Some depots have regular station IDs, so also check names.
 OPERATOR_NAMES = "(?i)charging|depot|warehouse|loading dock|mechanic"
 
 
 def canonical_id(col: str) -> str:
-    """SQL: '5980.1' / '5980.10' / '5980.10_' -> '5980.10'; anything else unchanged."""
+    """Normalize ID variants such as '5980.1' and '5980.10_' to '5980.10'."""
     return (
         f"CASE WHEN regexp_matches({col}, '^\\d+\\.\\d+_?$') "
         f"THEN printf('%.2f', CAST(rtrim({col}, '_') AS DECIMAL(9, 2))) ELSE {col} END"
@@ -62,7 +39,7 @@ def haversine_m(lat1: str, lng1: str, lat2: str, lng2: str) -> str:
 
 
 def build_aliases(con: duckdb.DuckDBPyConnection) -> None:
-    """Temp table `alias(old_id, new_id)`: same-name stations with successive lifetimes < 200 m apart."""
+    """Merge renamed IDs with the same name, successive dates, and locations within 200 m."""
     life = con.execute(
         f"""
         WITH ends AS (
@@ -93,7 +70,7 @@ def build_aliases(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def clean_month(src: Path, start: str, end: str, con: duckdb.DuckDBPyConnection) -> None:
-    """Label one source file, append its kept trips, and accumulate report/station aggregates."""
+    """Clean one file and collect trip, station, and rejection counts."""
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE labelled AS
@@ -135,7 +112,7 @@ def clean_month(src: Path, start: str, end: str, con: duckdb.DuckDBPyConnection)
     con.execute(
         "INSERT INTO report SELECT ?, coalesce(drop_reason, 'kept'), count(*) FROM labelled GROUP BY ALL", [source]
     )
-    # Per station/name/coordinate combination, so the final station table can take exact modes.
+    # Keep counts per name and location to choose the most common station details.
     con.execute(
         """
         INSERT INTO station_ends
@@ -148,8 +125,7 @@ def clean_month(src: Path, start: str, end: str, con: duckdb.DuckDBPyConnection)
         SELECT station_id, name, lat, lng, sum(departures), sum(arrivals), min(t), max(t) FROM ends GROUP BY ALL
         """
     )
-    # Slim trip table partitioned by *start* month; names/coordinates live in the station table.
-    # A source file also holds trips that started the previous month, hence the per-source filename.
+    # Use separate filenames because source files can contribute to the same start month.
     con.execute(
         f"""
         COPY (
@@ -162,7 +138,7 @@ def clean_month(src: Path, start: str, end: str, con: duckdb.DuckDBPyConnection)
                                   FILENAME_PATTERN 'from{source}_{{i}}')
         """
     )
-    # Source files overlap at month boundaries; remember ids for the next file.
+    # Remember trip IDs to remove duplicates in the next monthly file.
     con.execute("CREATE OR REPLACE TEMP TABLE prev_ids AS SELECT ride_id FROM labelled WHERE drop_reason IS NULL")
     print(f"  done  {source}")
 
@@ -190,7 +166,7 @@ def clean(start: str, end: str, con: duckdb.DuckDBPyConnection) -> None:
     report.write_csv(str(PROCESSED / "cleaning_report.csv"))
     print(report)
 
-    # Modal name/coordinates are weighted by the number of trip ends.
+    # Choose station details by their number of recorded arrivals and departures.
     con.execute(
         f"""
         COPY (

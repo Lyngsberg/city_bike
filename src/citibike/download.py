@@ -1,8 +1,6 @@
-"""Download monthly Citi Bike trip zips from the public S3 bucket.
+"""Download monthly trip ZIPs, skipping complete files and resuming partial ones.
 
-Idempotent: a file whose size matches S3 is skipped, and a partial file is
-resumed with an HTTP Range request. Downloads go to `<name>.part` and are only
-renamed once the size matches and the zip's central directory can be read.
+Check file size and the ZIP directory before marking a download complete.
 
     python -m citibike.download 2025-09 2026-08 --dry-run
     python -m citibike.download 2025-09 2026-08
@@ -22,7 +20,7 @@ CHUNK = 8 << 20
 
 
 def list_bucket() -> dict[str, int]:
-    """Return {key: size} for every object in the bucket (handles pagination)."""
+    """Read filenames and sizes across all pages of the bucket listing."""
     objects, token = {}, None
     while True:
         url = f"{S3_BUCKET}/?list-type=2" + (f"&continuation-token={urllib.request.quote(token)}" if token else "")
@@ -35,7 +33,7 @@ def list_bucket() -> dict[str, int]:
 
 
 def month_range(start: str, end: str) -> list[str]:
-    """'2025-09', '2026-08' -> ['202509', ..., '202608']."""
+    """Return YYYYMM values from start through end, including both months."""
     y, m = map(int, start.split("-"))
     ey, em = map(int, end.split("-"))
     out = []
@@ -51,7 +49,7 @@ def fetch(key: str, size: int, dest_dir: Path) -> None:
     if dest.exists() and dest.stat().st_size == size:
         print(f"  skip  {key} (complete)")
         return
-    if dest.exists():  # truncated file from an earlier, interrupted download
+    if dest.exists():
         dest.rename(part)
     have = part.stat().st_size if part.exists() else 0
     if have > size:
@@ -72,7 +70,7 @@ def fetch(key: str, size: int, dest_dir: Path) -> None:
 
     if part.stat().st_size != size:
         sys.exit(f"size mismatch for {key}: {part.stat().st_size} != {size}; rerun to resume")
-    with zipfile.ZipFile(part) as z:  # raises if the central directory is broken
+    with zipfile.ZipFile(part) as z:
         z.infolist()
     part.rename(dest)
 
@@ -88,7 +86,7 @@ def main() -> None:
     objects = list_bucket()
     wanted = []
     for ym in month_range(a.start, a.end):
-        key = f"{ym}-citibike-tripdata.zip"  # NYC only; JC-* files are Jersey City
+        key = f"{ym}-citibike-tripdata.zip"  # JC-* files contain Jersey City trips.
         if key not in objects:
             print(f"  missing on S3: {key} (only yearly zips exist before 2024)")
             continue

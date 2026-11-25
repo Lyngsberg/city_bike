@@ -1,14 +1,8 @@
-"""Build analysis inputs from cleaned trips: station graphs per time slice and
-24-hour net-flow profiles.
+"""Build trip graphs and hourly station profiles.
 
-Outputs (data/processed/):
-  edges.parquet    slice, src, dst, trips              directed, no self-loops
-  profiles.parquet station_id, day_type, hour, departures, arrivals, net, net_norm
-                   (averages per day of the station's lifetime; net = arrivals - departures,
-                    net_norm = net / average daily activity of the station)
-
-US federal holidays count as weekend days. A slice is defined by the trip's
-*start* time.
+Trip start times determine graph slices. Profiles count each departure and
+arrival at its own time. Federal holidays count as weekend days.
+Net flow is arrivals minus departures, normalized by daily station activity.
 
     python -m citibike.features
 """
@@ -19,7 +13,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 
 from citibike.paths import PROCESSED
 
-# name -> SQL predicate over columns day_type and hour (both from started_at)
+# Assign graph slices using the trip's start time.
 SLICES = {
     "all": "true",
     "weekday_am": "day_type = 'weekday' AND hour BETWEEN 6 AND 9",
@@ -31,7 +25,7 @@ SLICES = {
 
 
 def register_trips(con: duckdb.DuckDBPyConnection) -> None:
-    """View `trips` with day_type/hour for the start time; `trip_ends` has one row per departure or arrival."""
+    """Create views for trips and for separately timed departures and arrivals."""
     days = con.execute(f"SELECT min(started_at)::DATE, max(ended_at)::DATE FROM '{PROCESSED}/trips/*/*.parquet'").fetchone()
     holidays = pd.DataFrame({"day": USFederalHolidayCalendar().holidays(*days).date})
     con.register("holidays", holidays)
@@ -69,12 +63,12 @@ def build_profiles(con: duckdb.DuckDBPyConnection) -> None:
         f"""
         COPY (
             WITH days AS (SELECT DISTINCT t::DATE AS day, day_type FROM trip_ends),
-            n_days AS (  -- days of each type within the station's lifetime, to turn counts into per-day averages
+            n_days AS (  -- Average over days between the station's first and last observations.
                 SELECT station_id, day_type, count(*) AS days
                 FROM '{PROCESSED}/stations.parquet' s JOIN days ON day BETWEEN s.first_seen AND s.last_seen
                 GROUP BY ALL
             ),
-            grid AS (  -- every station x day_type x hour, so hours without trips become 0 instead of missing
+            grid AS (  -- Include hours with zero trips.
                 SELECT station_id, day_type, hour FROM n_days, range(24) r(hour)
             ),
             counts AS (

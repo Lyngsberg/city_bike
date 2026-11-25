@@ -1,11 +1,7 @@
-"""Convert downloaded trip zips to typed Parquet (no cleaning, only typing).
+"""Convert trip ZIPs to Parquet and check column names and row counts.
 
-One zip -> data/parquet/trips/month=YYYYMM/trips.parquet. Every CSV header is
-checked against TRIP_COLUMNS, and the Parquet row count is checked against the
-CSV line count, so schema drift or parse problems fail loudly.
-
-    python -m citibike.convert            # all zips in data/raw
-    python -m citibike.convert 202608     # selected months
+    python -m citibike.convert
+    python -m citibike.convert 202608
 """
 
 import argparse
@@ -20,7 +16,7 @@ from citibike.paths import PARQUET, RAW, TRIP_COLUMNS
 
 
 def extract_csvs(zip_path: Path, out_dir: Path) -> list[Path]:
-    """Extract all trip CSVs, recursing into nested zips (the old yearly archives nest monthly zips)."""
+    """Extract CSVs, including monthly ZIPs inside older yearly archives."""
     csvs = []
     with zipfile.ZipFile(zip_path) as z:
         for info in z.infolist():
@@ -47,8 +43,8 @@ def count_data_lines(path: Path) -> int:
         while buf := f.read(64 << 20):
             n += buf.count(b"\n")
         f.seek(-1, 2)
-        n += f.read(1) != b"\n"  # last line without trailing newline
-    return n - 1  # header
+        n += f.read(1) != b"\n"  # Count a final line without a newline.
+    return n - 1  # Exclude the header.
 
 
 def convert(zip_path: Path, out_root: Path, con: duckdb.DuckDBPyConnection, force: bool = False) -> None:

@@ -1,4 +1,4 @@
-"""Compare repeated Infomap fits on a shared station set across time slices."""
+"""Compare time periods using shared stations and repeated Infomap fits."""
 
 from itertools import combinations, product
 
@@ -12,11 +12,10 @@ from citibike import graph
 
 
 def common_graphs(slice_names, ids):
-    """Restrict every graph to the same connected station set.
+    """Find a shared station set connected in every period.
 
-    Removing a station can disconnect another slice. Repeat the intersection of
-    largest weak components until every slice retains the complete shared set.
-    Coverage is relative to each slice's initial graph on the supplied stations.
+    Removing stations can disconnect another period, so repeat until stable.
+    Coverage compares each final graph with its initial graph.
     """
     names = ["all", *slice_names]
     initial = {name: graph.load_graph(name, ids=ids) for name in names}
@@ -48,7 +47,7 @@ def common_graphs(slice_names, ids):
 
 
 def fit_repeated(networks, seeds, trials):
-    """Fit annual and slice networks using the same Infomap settings."""
+    """Use the same seeds and Infomap settings for every period."""
     runs = {}
     for name, network in networks.items():
         runs[name] = {}
@@ -59,10 +58,9 @@ def fit_repeated(networks, seeds, trials):
 
 
 def align_partition(reference, labels):
-    """Match communities by maximum total overlap using a one-to-one assignment.
+    """Match labels one-to-one to maximize shared stations.
 
-    Return annual label names where matched, and fresh labels for extra groups.
-    ARI is invariant to labels and does not require this alignment.
+    Extra groups get new IDs. ARI can compare the original labels directly.
     """
     reference_values = np.unique(reference)
     label_values = np.unique(labels)
@@ -78,7 +76,7 @@ def align_partition(reference, labels):
 
 
 def representative(partitions):
-    """Choose the observed fit with highest mean ARI to all other fits."""
+    """Choose the run with the highest mean agreement with the other runs."""
     seeds = list(partitions)
     agreement = np.array([
         [adjusted_rand_score(partitions[a], partitions[b]) for b in seeds]
@@ -88,7 +86,7 @@ def representative(partitions):
 
 
 def compare_runs(networks, runs):
-    """Return tidy seed-stability, cross-period ARI, and retention measurements."""
+    """Measure agreement within and across periods, plus retention for each seed."""
     within = []
     across = []
     retention = []
