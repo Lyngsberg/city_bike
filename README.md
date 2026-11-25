@@ -7,6 +7,19 @@ are the course methods. Directed Infomap is the method beyond the curriculum.
 
 ## Set up the notebook
 
+To use Conda, run these commands from the repository root.
+
+```bash
+conda env create -f environment.yml
+conda activate city-bike
+python -m ipykernel install --user --name city-bike --display-name "Python (city-bike)"
+jupyter lab city_bike.ipynb
+```
+
+Select **Python (city-bike)** as the notebook kernel.
+
+Alternatively, use a virtual environment.
+
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -44,11 +57,17 @@ and clustering helpers were adapted from the earlier
 ## Current framework
 
 The notebook runs a first comparison of directed Infomap, Louvain, spectral
-clustering, and geographic k-means with a matched community count. It shows
-retention by time of day for the full-year partition and compares k-means with
-Ward clustering on normalized hourly net flows. PCA provides a two-dimensional
-view of station profiles.
+clustering, and geographic k-means with a matched community count. Section 3
+fits annual and period-specific Infomap communities on a shared station set,
+with five seeds and five internal trials per seed. It reports station/trip
+coverage, ARI agreement within and across periods, retention under annual and
+period-specific boundaries, community counts, and geographically located station
+changes. The support functions are in `src/citibike/temporal.py`.
 
-The final evaluation still needs stability checks across seeds and time periods,
-and the notebook has a section for interpreting the results and recording group
-contributions.
+Temporal tables are regenerated under `data/processed/temporal/` by Run All.
+The comparison measures optimization variability and in-sample structure.
+Sampling uncertainty and held-out temporal evaluation remain possible extensions.
+
+Section 4 compares k-means with Ward clustering on normalized hourly net flows.
+PCA provides a two-dimensional view of station profiles. The final hand-in still
+needs the group discussion and individual contributions.
